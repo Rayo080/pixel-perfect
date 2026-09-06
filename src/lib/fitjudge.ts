@@ -22,6 +22,15 @@ export type BodyAssessment = {
   nivelExigencia?: string;
 };
 
+export type WorkoutType = "strength" | "boxing" | "high-intensity" | "rest";
+
+export type WeeklyPlanEntry = {
+  activity: WorkoutType;
+  hours: number;
+};
+
+export type WeeklyPlan = Record<string, WeeklyPlanEntry>;
+
 export type Settings = {
   apiKey: string;
   userName: string;
@@ -35,12 +44,21 @@ export type Settings = {
   maintenanceCalories: number;
   metaCalorias: number;
   metaProteinas: number;
+  stepsDaily: number;
   additionalDetails: string;
+  weeklyPlan: WeeklyPlan;
+  dailyOverrideDate?: string;
+  dailyOverrideActivity?: WorkoutType;
   bodyAssessment?: BodyAssessment;
 };
 
 const MEALS_KEY = "fitjudge.meals";
 const SETTINGS_KEY = "fitjudge.settings";
+
+export function toFiniteNumber(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
 
 export const defaultSettings: Settings = {
   apiKey: "",
@@ -55,7 +73,9 @@ export const defaultSettings: Settings = {
   maintenanceCalories: 2000,
   metaCalorias: 2000,
   metaProteinas: 150,
+  stepsDaily: 6000,
   additionalDetails: "",
+  weeklyPlan: {},
 };
 
 export const activityOptions = [
@@ -83,31 +103,152 @@ export const goalOptions = [
 
 export type ProfileInput = Pick<
   Settings,
-  "userName" | "age" | "weight" | "height" | "gender" | "activity" | "goals" | "additionalDetails"
+  | "userName"
+  | "age"
+  | "weight"
+  | "height"
+  | "gender"
+  | "activity"
+  | "goals"
+  | "additionalDetails"
+  | "weeklyPlan"
+  | "stepsDaily"
 >;
 
+export const weekDays = [
+  ["monday", "Lunes"],
+  ["tuesday", "Martes"],
+  ["wednesday", "Miércoles"],
+  ["thursday", "Jueves"],
+  ["friday", "Viernes"],
+  ["saturday", "Sábado"],
+  ["sunday", "Domingo"],
+] as const;
+
+export const defaultWeeklyPlan = (): WeeklyPlan =>
+  Object.fromEntries(weekDays.map(([day]) => [day, { activity: "rest", hours: 0 }]));
+
+export function getDailyTargets(settings: Settings, date = new Date()) {
+  const dayKey = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][
+    date.getDay()
+  ]!;
+  const todayKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const planned = settings.weeklyPlan?.[dayKey] ?? {
+    activity: "rest" as const,
+    hours: 0,
+  };
+  const activity =
+    settings.dailyOverrideDate === todayKey && settings.dailyOverrideActivity
+      ? settings.dailyOverrideActivity
+      : planned.activity;
+  const isCancelled = settings.dailyOverrideDate === todayKey && activity === "rest";
+  const hours = Math.max(
+    0,
+    toFiniteNumber(planned.hours ?? planned.strengthHours ?? planned.intensityHours, 0),
+  );
+  const energy = calculateDailyEnergy({
+    weightKg: toFiniteNumber(settings.weight, 70),
+    heightCm: toFiniteNumber(settings.height, 170),
+    age: toFiniteNumber(settings.age, 30),
+    gender: settings.gender,
+    stepsDaily: Math.max(0, toFiniteNumber(settings.stepsDaily, 6000)),
+    activity,
+    minutes: hours * 60,
+  });
+  const trainingBonus = isCancelled ? 0 : energy.eat + energy.epoc;
+  const maintenanceCalories = isCancelled
+    ? energy.bmr + energy.neat + Math.round((energy.bmr + energy.neat) * 0.1)
+    : energy.tdee;
+  return {
+    dayKey,
+    activity,
+    plannedActivity: planned.activity === "rest" ? "rest" : planned.activity,
+    isCancelled,
+    hours,
+    trainingBonus,
+    maintenanceCalories,
+    metaCalorias: Math.max(
+      1200,
+      maintenanceCalories +
+        (settings.goals.includes("lose-fat")
+          ? -400
+          : settings.goals.includes("gain-muscle")
+            ? 300
+            : 0),
+    ),
+    energy,
+  };
+}
+
 export function calculateTargets(profile: ProfileInput) {
-  const base = profile.gender === "male" ? 5 : profile.gender === "female" ? -161 : -78;
-  const bmr = 10 * profile.weight + 6.25 * profile.height - 5 * profile.age + base;
-  const activityMultiplier = {
-    low: 1.2,
-    light: 1.375,
-    moderate: 1.55,
-    high: 1.725,
-    "very-high": 1.9,
-  }[profile.activity];
-  const maintenanceCalories = Math.round((bmr * activityMultiplier) / 50) * 50;
+  const energy = calculateDailyEnergy({
+    weightKg: toFiniteNumber(profile.weight, 70),
+    heightCm: toFiniteNumber(profile.height, 170),
+    age: toFiniteNumber(profile.age, 30),
+    gender: profile.gender,
+    stepsDaily: Math.max(0, toFiniteNumber(profile.stepsDaily, 6000)),
+    activity: "rest",
+    minutes: 0,
+  });
+  const maintenanceCalories = energy.tdee;
   const calorieAdjustment = profile.goals.includes("lose-fat")
     ? -400
     : profile.goals.includes("gain-muscle")
-      ? 250
+      ? 300
       : 0;
   const metaCalorias = Math.max(1200, maintenanceCalories + calorieAdjustment);
   const metaProteinas = Math.round(
-    profile.weight * (profile.goals.includes("gain-muscle") ? 2 : 1.7),
+    toFiniteNumber(profile.weight, 70) * (profile.goals.includes("gain-muscle") ? 2 : 1.7),
   );
 
-  return { maintenanceCalories, metaCalorias, metaProteinas };
+  return { maintenanceCalories, metaCalorias, metaProteinas, energy };
+}
+
+const activityMet: Record<WorkoutType, number> = {
+  rest: 1,
+  strength: 5,
+  boxing: 7.8,
+  "high-intensity": 7,
+};
+
+export function calculateDailyEnergy({
+  weightKg,
+  heightCm,
+  age,
+  gender,
+  stepsDaily,
+  activity,
+  minutes,
+}: {
+  weightKg: number;
+  heightCm: number;
+  age: number;
+  gender: Settings["gender"];
+  stepsDaily: number;
+  activity: WorkoutType;
+  minutes: number;
+}) {
+  const sexConstant = gender === "male" ? 5 : gender === "female" ? -161 : -78;
+  const safeWeight = toFiniteNumber(weightKg, 70);
+  const safeHeight = toFiniteNumber(heightCm, 170);
+  const safeAge = toFiniteNumber(age, 30);
+  const safeSteps = Math.max(0, toFiniteNumber(stepsDaily, 6000));
+  const safeMinutes = Math.max(0, toFiniteNumber(minutes, 0));
+  const bmr = 10 * safeWeight + 6.25 * safeHeight - 5 * safeAge + sexConstant;
+  const neat = safeSteps * 0.04 + 300;
+  const met = activityMet[activity];
+  const eat = met > 1 ? (((met - 1) * 3.5 * safeWeight) / 200) * safeMinutes : 0;
+  const subtotal = bmr + neat + eat;
+  const tef = subtotal * 0.1;
+  const epoc = activity === "strength" && safeMinutes > 0 ? 65 : 0;
+  return {
+    bmr: Math.round(bmr),
+    neat: Math.round(neat),
+    eat: Math.round(eat),
+    epoc,
+    tef: Math.round(tef),
+    tdee: Math.round(subtotal + tef + epoc),
+  };
 }
 
 export function loadSettings(): Settings {

@@ -60,6 +60,18 @@ export function SettingsDialog({
               className="min-h-20"
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="settings-steps">Pasos diarios aproximados</Label>
+            <Input
+              id="settings-steps"
+              type="number"
+              min="0"
+              max="100000"
+              step="500"
+              value={draft.stepsDaily}
+              onChange={(e) => setDraft({ ...draft, stepsDaily: Number(e.target.value) })}
+            />
+          </div>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2">
               <Label htmlFor="settings-age">Edad</Label>

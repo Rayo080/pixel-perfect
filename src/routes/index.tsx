@@ -29,14 +29,20 @@ import {
   activityOptions,
   calculateTargets,
   defaultSettings,
+  defaultWeeklyPlan,
   fileToBase64,
+  getDailyTargets,
   goalOptions,
   saveSettings,
   splitDataUrl,
+  toFiniteNumber,
+  weekDays,
   type Meal,
   type BodyAssessment,
   type ProfileInput,
   type Settings,
+  type WorkoutType,
+  type WeeklyPlan,
 } from "@/lib/fitjudge";
 import { supabase } from "@/lib/supabase";
 
@@ -75,12 +81,24 @@ const getDateKey = (date: string | Date) => {
 const formatDate = (dateKey: string, options: Intl.DateTimeFormatOptions) =>
   new Date(`${dateKey}T12:00:00`).toLocaleDateString("es-ES", options);
 
+type CalorieZone = "optimal" | "acceptable" | "failed";
+
+const getCalorieZone = (calories: number, target: number): CalorieZone => {
+  if (target <= 0) return "failed";
+  const deviation = Math.abs(calories - target) / target;
+  if (deviation <= 0.05) return "optimal";
+  if (deviation <= 0.1) return "acceptable";
+  return "failed";
+};
+
 function Index() {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [view, setView] = useState<"auth" | "onboarding" | "app">("auth");
   const [meals, setMeals] = useState<Meal[]>([]);
   const [selectedDate, setSelectedDate] = useState(getDateKey(new Date()));
   const [daysExpanded, setDaysExpanded] = useState(true);
+  const [showWorkoutPrompt, setShowWorkoutPrompt] = useState(false);
+  const [cancelledWorkoutDate, setCancelledWorkoutDate] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [image, setImage] = useState<string | null>(null);
   const [description, setDescription] = useState("");
@@ -113,20 +131,29 @@ function Index() {
             profileComplete: Boolean(
               profile.age && profile.weight && profile.height && profile.goals?.length,
             ),
-            age: profile.age ?? defaultSettings.age,
-            weight: profile.weight ?? defaultSettings.weight,
-            height: profile.height ?? defaultSettings.height,
+            age: toFiniteNumber(profile.age, defaultSettings.age),
+            weight: toFiniteNumber(profile.weight, defaultSettings.weight),
+            height: toFiniteNumber(profile.height, defaultSettings.height),
             gender: profile.gender ?? defaultSettings.gender,
             activity: profile.activity ?? defaultSettings.activity,
             goals:
               typeof profile.goals === "string"
                 ? profile.goals.split(",").filter(Boolean)
                 : (profile.goals ?? []),
-            maintenanceCalories:
-              profile.maintenance_calories ?? defaultSettings.maintenanceCalories,
-            metaCalorias: profile.target_calories ?? defaultSettings.metaCalorias,
-            metaProteinas: profile.target_proteins ?? defaultSettings.metaProteinas,
+            maintenanceCalories: toFiniteNumber(
+              profile.maintenance_calories,
+              defaultSettings.maintenanceCalories,
+            ),
+            metaCalorias: toFiniteNumber(profile.target_calories, defaultSettings.metaCalorias),
+            metaProteinas: toFiniteNumber(profile.target_proteins, defaultSettings.metaProteinas),
+            stepsDaily: Math.max(
+              0,
+              toFiniteNumber(profile.steps_daily, defaultSettings.stepsDaily),
+            ),
             additionalDetails: profile.additional_details ?? defaultSettings.additionalDetails,
+            weeklyPlan: profile.weekly_plan ?? defaultWeeklyPlan(),
+            dailyOverrideDate: profile.daily_override_date ?? undefined,
+            dailyOverrideActivity: profile.daily_override_activity ?? undefined,
             bodyAssessment: profile.body_assessment ?? undefined,
           }
         : { ...defaultSettings, userName: user.user_metadata?.name || "" };
@@ -147,6 +174,16 @@ function Index() {
         })),
       );
       setSelectedDate(getDateKey(new Date()));
+      setCancelledWorkoutDate(
+        nextSettings.dailyOverrideDate === getDateKey(new Date()) &&
+          nextSettings.dailyOverrideActivity === "rest"
+          ? getDateKey(new Date())
+          : null,
+      );
+      setShowWorkoutPrompt(
+        getDailyTargets(nextSettings).activity !== "rest" &&
+          nextSettings.dailyOverrideDate !== getDateKey(new Date()),
+      );
       setView(nextSettings.profileComplete ? "app" : "onboarding");
     };
 
@@ -209,19 +246,94 @@ function Index() {
   });
   const calendarDates = [...new Set([...recentDates, ...dates])].sort((a, b) => b.localeCompare(a));
   const selectedMeals = meals.filter((meal) => getDateKey(meal.createdAt) === selectedDate);
+  const dailyTargets = getDailyTargets(settings);
+  const selectedTargets = getDailyTargets(settings, new Date(`${selectedDate}T12:00:00`));
+  const isSelectedWorkoutCancelled =
+    selectedTargets.isCancelled || cancelledWorkoutDate === selectedDate;
   const totalKcal = selectedMeals.reduce((a, m) => a + m.calorias, 0);
   const totalProt = selectedMeals.reduce((a, m) => a + m.proteinas, 0);
+  const calorieDifference = totalKcal - selectedTargets.metaCalorias;
+  const selectedCalorieZone = getCalorieZone(totalKcal, selectedTargets.metaCalorias);
+  const proteinRatio = totalProt / Math.max(settings.metaProteinas, 1);
+  const proteinZone: CalorieZone =
+    proteinRatio >= 1 ? "optimal" : proteinRatio >= 0.9 ? "acceptable" : "failed";
+  const selectedComplianceZone: CalorieZone =
+    selectedCalorieZone === "failed" || proteinZone === "failed"
+      ? "failed"
+      : selectedCalorieZone === "acceptable" || proteinZone === "acceptable"
+        ? "acceptable"
+        : "optimal";
+  const calorieStatus =
+    selectedCalorieZone === "optimal"
+      ? "En objetivo"
+      : selectedCalorieZone === "acceptable"
+        ? calorieDifference < 0
+          ? "Déficit ligero"
+          : "Superávit ligero"
+        : calorieDifference < 0
+          ? "Déficit"
+          : "Superávit";
+  const activityLabels: Record<string, string> = {
+    strength: "Fuerza (hipertrofia)",
+    boxing: "Boxeo",
+    "high-intensity": "Alta intensidad",
+    rest: "Descanso",
+  };
+  const selectedActivity = isSelectedWorkoutCancelled
+    ? `Actividad: ${activityLabels[selectedTargets.plannedActivity] ?? "Actividad"} × Cancelada hoy`
+    : `${activityLabels[selectedTargets.activity] ?? "Descanso"}${
+        selectedTargets.activity === "rest" ? "" : ` · ${selectedTargets.hours} h`
+      }`;
+  const proteinStatus =
+    proteinZone === "optimal"
+      ? "Proteína OK"
+      : proteinZone === "acceptable"
+        ? "Proteína suficiente"
+        : "Proteína baja";
   const todayKey = getDateKey(new Date());
   const selectedDateIsToday = selectedDate === todayKey;
   const selectedDateIsEmpty = selectedMeals.length === 0;
+  const selectedZoneLabel =
+    selectedComplianceZone === "optimal"
+      ? "Zona verde · óptimo"
+      : selectedComplianceZone === "acceptable"
+        ? "Zona amarilla · aceptable"
+        : "Zona roja · incumplimiento";
+  const selectedDayScore =
+    selectedComplianceZone === "optimal" ? 10 : selectedComplianceZone === "acceptable" ? 8 : 3;
+  const getDayZone = (date: string) => {
+    const dayMeals = meals.filter((meal) => getDateKey(meal.createdAt) === date);
+    if (dayMeals.length === 0) return "failed" as const;
+    const dayCalories = dayMeals.reduce((total, meal) => total + meal.calorias, 0);
+    const dayProtein = dayMeals.reduce((total, meal) => total + meal.proteinas, 0);
+    const caloriesZone = getCalorieZone(
+      dayCalories,
+      getDailyTargets(settings, new Date(`${date}T12:00:00`)).metaCalorias,
+    );
+    const dayProteinZone =
+      dayProtein / Math.max(settings.metaProteinas, 1) >= 1
+        ? "optimal"
+        : dayProtein / Math.max(settings.metaProteinas, 1) >= 0.9
+          ? "acceptable"
+          : "failed";
+    return caloriesZone === "failed" || dayProteinZone === "failed"
+      ? "failed"
+      : caloriesZone === "acceptable" || dayProteinZone === "acceptable"
+        ? "acceptable"
+        : "optimal";
+  };
   const hasPreviousDay = (date: string) => {
     const previous = new Date(`${date}T12:00:00`);
     previous.setDate(previous.getDate() - 1);
     return dates.includes(getDateKey(previous));
   };
   let streak = 0;
-  let streakDate = dates.includes(todayKey) ? todayKey : dates[0];
-  while (streakDate && dates.includes(streakDate)) {
+  let streakDate = dates.includes(todayKey)
+    ? getDayZone(todayKey) === "failed"
+      ? undefined
+      : todayKey
+    : dates[0];
+  while (streakDate && dates.includes(streakDate) && getDayZone(streakDate) !== "failed") {
     streak += 1;
     if (!hasPreviousDay(streakDate)) break;
     const previous = new Date(`${streakDate}T12:00:00`);
@@ -342,9 +454,13 @@ function Index() {
       activity: profile.activity,
       goals: profile.goals.join(","),
       additional_details: profile.additionalDetails,
+      steps_daily: profile.stepsDaily,
       maintenance_calories: next.maintenanceCalories,
       target_calories: next.metaCalorias,
       target_proteins: next.metaProteinas,
+      weekly_plan: profile.weeklyPlan,
+      daily_override_date: next.dailyOverrideDate ?? null,
+      daily_override_activity: next.dailyOverrideActivity ?? null,
       body_photo_path: bodyPhotoPath,
       body_assessment: bodyAssessment ?? null,
       body_assessment_created_at: bodyAssessment ? new Date().toISOString() : null,
@@ -368,6 +484,7 @@ function Index() {
           edad: profile.age,
           pesoKg: profile.weight,
           alturaCm: profile.height,
+          pasosDiarios: profile.stepsDaily,
           actividad: profile.activity,
           objetivos: profile.goals,
           caloriasBaseCalculadas: calculateTargets(profile).metaCalorias,
@@ -430,9 +547,81 @@ function Index() {
     );
   }
 
+  const decideTodayWorkout = async (activity: WorkoutType) => {
+    const today = getDateKey(new Date());
+    const nextSettings = {
+      ...settings,
+      dailyOverrideDate: today,
+      dailyOverrideActivity: activity,
+    };
+    const { error } = await supabase
+      .from("profiles")
+      .update({ daily_override_date: today, daily_override_activity: activity })
+      .eq("user_id", userId);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    setSettings(nextSettings);
+    setSelectedDate(today);
+    setCancelledWorkoutDate(activity === "rest" ? today : null);
+    saveSettings(nextSettings);
+    setShowWorkoutPrompt(false);
+  };
+
+  const restoreTodayWorkout = async () => {
+    const { error } = await supabase
+      .from("profiles")
+      .update({ daily_override_date: null, daily_override_activity: null })
+      .eq("user_id", userId);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    const nextSettings = {
+      ...settings,
+      dailyOverrideDate: undefined,
+      dailyOverrideActivity: undefined,
+    };
+    setSettings(nextSettings);
+    setCancelledWorkoutDate(null);
+    saveSettings(nextSettings);
+  };
+
+  const workoutLabels: Record<WorkoutType, string> = {
+    strength: "sesión de fuerza",
+    "high-intensity": "sesión de alta intensidad",
+    hybrid: "sesión híbrida",
+    rest: "descanso",
+  };
+
   return (
     <main className="min-h-screen bg-background">
       <Toaster />
+      {showWorkoutPrompt && (
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/70 p-4 sm:items-center">
+          <section className="w-full max-w-md rounded-2xl border border-primary/40 bg-card p-5 shadow-2xl sm:p-6">
+            <p className="text-xs font-bold uppercase tracking-widest text-primary">
+              Control del entrenador
+            </p>
+            <h2 className="mt-2 text-2xl font-black">
+              Hoy toca {workoutLabels[dailyTargets.activity]}.
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              La meta de hoy ya está ajustada a tu plan. ¿Vas a cumplir o vas a convertirlo en
+              descanso?
+            </p>
+            <div className="mt-5 grid gap-2 sm:grid-cols-2">
+              <Button onClick={() => void decideTodayWorkout(dailyTargets.activity)}>
+                Voy a entrenar
+              </Button>
+              <Button variant="outline" onClick={() => void decideTodayWorkout("rest")}>
+                Hoy descanso
+              </Button>
+            </div>
+          </section>
+        </div>
+      )}
       <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:py-12">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -490,9 +679,13 @@ function Index() {
                     activity: s.activity,
                     goals: s.goals.join(","),
                     additional_details: s.additionalDetails,
+                    steps_daily: s.stepsDaily,
                     maintenance_calories: s.maintenanceCalories,
                     target_calories: s.metaCalorias,
                     target_proteins: s.metaProteinas,
+                    weekly_plan: s.weeklyPlan,
+                    daily_override_date: s.dailyOverrideDate ?? null,
+                    daily_override_activity: s.dailyOverrideActivity ?? null,
                   })
                   .eq("user_id", userId)
                   .then(({ error }) => {
@@ -568,17 +761,39 @@ function Index() {
         <section className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
           <ProgressCard
             label="Mantenimiento estimado"
-            current={settings.maintenanceCalories}
-            goal={settings.maintenanceCalories}
+            current={selectedTargets.maintenanceCalories}
+            goal={selectedTargets.maintenanceCalories}
             unit="kcal/día"
             icon={<Flame className="size-4" />}
+            helperText={null}
           />
           <ProgressCard
             label="Calorías"
             current={totalKcal}
-            goal={settings.metaCalorias}
+            goal={selectedTargets.metaCalorias}
             unit="kcal"
             icon={<Flame className="size-4" />}
+            status={calorieStatus}
+            context={selectedActivity}
+            contextAlert={isSelectedWorkoutCancelled}
+            actionLabel={
+              selectedDateIsToday
+                ? isSelectedWorkoutCancelled
+                  ? "Hoy sí entreno"
+                  : selectedTargets.activity !== "rest"
+                    ? "Hoy no entreno"
+                    : undefined
+                : undefined
+            }
+            onAction={
+              selectedDateIsToday
+                ? isSelectedWorkoutCancelled
+                  ? () => void restoreTodayWorkout()
+                  : selectedTargets.activity !== "rest"
+                    ? () => void decideTodayWorkout("rest")
+                    : undefined
+                : undefined
+            }
           />
           <ProgressCard
             label="Proteínas"
@@ -587,6 +802,7 @@ function Index() {
             unit="g"
             overIsBad={false}
             icon={<Beef className="size-4" />}
+            status={proteinStatus}
           />
         </section>
 
@@ -628,7 +844,7 @@ function Index() {
             <p className="text-xs text-muted-foreground">
               {selectedDateIsToday
                 ? "Estará disponible cuando termine el día."
-                : "Evaluación calculada con todas las comidas de este día."}
+                : `${selectedZoneLabel}. La racha solo se rompe en la zona roja.`}
             </p>
           </div>
           {selectedDateIsToday ? (
@@ -637,10 +853,7 @@ function Index() {
             </span>
           ) : (
             <strong className="text-3xl font-black text-primary">
-              {Math.round(
-                Math.min(1, totalKcal / Math.max(settings.metaCalorias, 1)) * 5 +
-                  Math.min(1, totalProt / Math.max(settings.metaProteinas, 1)) * 5,
-              )}
+              {selectedDayScore}
               <span className="text-base text-muted-foreground">/10</span>
             </strong>
           )}
@@ -978,9 +1191,18 @@ function OnboardingScreen({
     activity: settings.activity,
     goals: settings.goals,
     additionalDetails: settings.additionalDetails,
+    stepsDaily: settings.stepsDaily,
+    weeklyPlan: settings.weeklyPlan ?? defaultWeeklyPlan(),
   });
   const update = (patch: Partial<ProfileInput>) =>
     setProfile((current) => ({ ...current, ...patch }));
+  const updateDay = (day: string, patch: Partial<WeeklyPlan[string]>) =>
+    update({
+      weeklyPlan: {
+        ...profile.weeklyPlan,
+        [day]: { ...profile.weeklyPlan[day], ...patch },
+      },
+    });
   const valid =
     profile.age > 0 && profile.weight > 0 && profile.height > 0 && profile.goals.length > 0;
 
@@ -1012,6 +1234,60 @@ function OnboardingScreen({
               Se guardará en tu perfil y la IA lo tendrá en cuenta junto con tus datos.
             </p>
           </div>
+
+          <section className="space-y-4 rounded-xl border border-border bg-background/60 p-4">
+            <div>
+              <h2 className="font-bold">Tu semana tipo</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                El objetivo diario subirá según el entrenamiento previsto. Los días sin selección
+                son descanso.
+              </p>
+            </div>
+            <div className="space-y-3">
+              {weekDays.map(([day, label]) => {
+                const entry = profile.weeklyPlan[day] ?? {
+                  activity: "rest" as const,
+                  hours: 0,
+                };
+                return (
+                  <div
+                    key={day}
+                    className="grid gap-2 sm:grid-cols-[7rem_1fr_5rem] sm:items-center"
+                  >
+                    <span className="text-sm font-semibold">{label}</span>
+                    <select
+                      value={entry.activity}
+                      onChange={(event) =>
+                        updateDay(day, { activity: event.target.value as WorkoutType })
+                      }
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="rest">Descanso / sedentario</option>
+                      <option value="strength">Fuerza (hipertrofia)</option>
+                      <option value="boxing">Boxeo</option>
+                      <option value="high-intensity">Alta intensidad</option>
+                    </select>
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Horas
+                      </span>
+                      <Input
+                        aria-label={`${label} horas de entrenamiento`}
+                        type="number"
+                        min="0"
+                        max="12"
+                        step="0.5"
+                        value={entry.hours}
+                        disabled={entry.activity === "rest"}
+                        onChange={(event) => updateDay(day, { hours: Number(event.target.value) })}
+                        placeholder="0"
+                      />
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
           <section className="rounded-xl border border-border bg-background/60 p-4">
             <div className="flex items-start gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -1130,6 +1406,23 @@ function OnboardingScreen({
               </label>
             ))}
           </div>
+
+          <label className="block text-sm font-medium" htmlFor="steps-daily">
+            Pasos diarios aproximados
+            <Input
+              id="steps-daily"
+              type="number"
+              min="0"
+              max="100000"
+              step="500"
+              value={profile.stepsDaily}
+              onChange={(event) => update({ stepsDaily: Number(event.target.value) })}
+              className="mt-2"
+            />
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">
+              Se usan para estimar tu NEAT (movimiento diario fuera del entrenamiento).
+            </span>
+          </label>
 
           <fieldset>
             <legend className="text-sm font-medium">Género</legend>

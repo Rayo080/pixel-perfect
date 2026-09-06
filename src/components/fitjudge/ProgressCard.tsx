@@ -7,9 +7,28 @@ type Props = {
   unit: string;
   overIsBad?: boolean;
   icon: React.ReactNode;
+  status?: string;
+  helperText?: string | null;
+  context?: string;
+  contextAlert?: boolean;
+  actionLabel?: string;
+  onAction?: () => void;
 };
 
-export function ProgressCard({ label, current, goal, unit, overIsBad = true, icon }: Props) {
+export function ProgressCard({
+  label,
+  current,
+  goal,
+  unit,
+  overIsBad = true,
+  icon,
+  status,
+  helperText,
+  context,
+  contextAlert = false,
+  actionLabel,
+  onAction,
+}: Props) {
   const pct = goal > 0 ? Math.min((current / goal) * 100, 100) : 0;
   const over = current > goal;
   const bad = over && overIsBad;
@@ -21,6 +40,20 @@ export function ProgressCard({ label, current, goal, unit, overIsBad = true, ico
         <div className="flex min-w-0 items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground sm:text-sm sm:tracking-widest">
           <span className="text-primary">{icon}</span>
           <span className="truncate">{label}</span>
+          {status && (
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold normal-case tracking-normal",
+                status === "En objetivo"
+                  ? "bg-success/15 text-success"
+                  : status.startsWith("superávit")
+                    ? "bg-destructive/15 text-destructive"
+                    : "bg-primary/15 text-primary",
+              )}
+            >
+              {status}
+            </span>
+          )}
         </div>
         <span
           className={cn(
@@ -45,6 +78,27 @@ export function ProgressCard({ label, current, goal, unit, overIsBad = true, ico
         </span>
       </div>
 
+      {context && (
+        <p
+          className={cn(
+            "mt-1 text-xs font-semibold",
+            contextAlert ? "text-destructive" : "text-primary",
+          )}
+        >
+          {context}
+        </p>
+      )}
+
+      {actionLabel && onAction && (
+        <button
+          type="button"
+          onClick={onAction}
+          className="mt-2 text-xs font-semibold text-muted-foreground underline decoration-border underline-offset-2 transition-colors hover:text-destructive"
+        >
+          {actionLabel}
+        </button>
+      )}
+
       <div className="mt-4 h-2.5 w-full overflow-hidden rounded-full bg-muted">
         <div
           className={cn(
@@ -54,11 +108,14 @@ export function ProgressCard({ label, current, goal, unit, overIsBad = true, ico
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        {bad
-          ? `Te has pasado ${Math.round(current - goal)} ${unit}. El entrenador lo ha visto.`
-          : `Te faltan ${Math.max(0, Math.round(goal - current))} ${unit}.`}
-      </p>
+      {helperText !== null && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {helperText ??
+            (bad
+              ? `Te has pasado ${Math.round(current - goal)} ${unit}. El entrenador lo ha visto.`
+              : `Te faltan ${Math.max(0, Math.round(goal - current))} ${unit}.`)}
+        </p>
+      )}
     </div>
   );
 }
