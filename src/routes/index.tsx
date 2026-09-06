@@ -959,7 +959,6 @@ function Index() {
               ref={inputRef}
               type="file"
               accept="image/*"
-              capture="environment"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -1322,7 +1321,6 @@ function OnboardingScreen({
               ref={bodyInputRef}
               type="file"
               accept="image/*"
-              capture="environment"
               className="hidden"
               onChange={async (event) => {
                 const file = event.target.files?.[0];
