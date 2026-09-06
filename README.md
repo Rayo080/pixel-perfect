@@ -23,7 +23,7 @@ npm i
 npm run dev
 ```
 
-## Supabase y análisis con IA
+## Supabase y análisis con IAs
 
 La app usa Supabase Auth para crear cuentas e iniciar sesión. Las migraciones de tablas, políticas
 RLS, perfil corporal y Storage privado están en `supabase/migrations/`.
