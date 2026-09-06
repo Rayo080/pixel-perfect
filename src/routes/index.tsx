@@ -61,7 +61,7 @@ function Index() {
     setSettings(loadSettings());
     const stored = loadMeals();
     setMeals(stored);
-    if (stored.length) setCoachMessage(stored[0].comentarioEstricto);
+    if (stored[0]) setCoachMessage(stored[0].comentarioEstricto);
   }, []);
 
   const persist = (next: Meal[]) => {

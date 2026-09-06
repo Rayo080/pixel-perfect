@@ -4,7 +4,7 @@ export type Meal = {
   calorias: number;
   proteinas: number;
   comentarioEstricto: string;
-  image?: string;
+  image?: string | undefined;
   time: string;
 };
 
@@ -137,6 +137,7 @@ export async function analyzeMealDemo(description: string): Promise<Analysis> {
     calorias: base,
     proteinas: 10 + Math.round(Math.random() * 40),
     nombreComida: description ? description.slice(0, 40) : "Plato sin identificar",
-    comentarioEstricto: DEMO_COMENTARIOS[Math.floor(Math.random() * DEMO_COMENTARIOS.length)],
+    comentarioEstricto:
+      DEMO_COMENTARIOS[Math.floor(Math.random() * DEMO_COMENTARIOS.length)] ?? DEMO_COMENTARIOS[0]!,
   };
 }
