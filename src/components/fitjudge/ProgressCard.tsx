@@ -16,11 +16,11 @@ export function ProgressCard({ label, current, goal, unit, overIsBad = true, ico
   const done = !overIsBad && current >= goal;
 
   return (
-    <div className="card-heat rounded-2xl p-5">
+    <div className="card-heat rounded-2xl p-4 sm:p-5">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-medium uppercase tracking-widest text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground sm:text-sm sm:tracking-widest">
           <span className="text-primary">{icon}</span>
-          {label}
+          <span className="truncate">{label}</span>
         </div>
         <span
           className={cn(
@@ -37,7 +37,7 @@ export function ProgressCard({ label, current, goal, unit, overIsBad = true, ico
       </div>
 
       <div className="mt-3 flex items-baseline gap-2">
-        <span className="text-4xl font-black tracking-tight text-foreground">
+        <span className="text-3xl font-black tracking-tight text-foreground sm:text-4xl">
           {Math.round(current)}
         </span>
         <span className="text-sm text-muted-foreground">

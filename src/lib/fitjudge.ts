@@ -6,12 +6,37 @@ export type Meal = {
   comentarioEstricto: string;
   image?: string | undefined;
   time: string;
+  createdAt: string;
+};
+
+export type BodyAssessment = {
+  nivelMuscularVisual: string;
+  composicionVisual: string;
+  posturaObservada: string;
+  confianza: "baja" | "media" | "alta" | string;
+  veredictoInicial: string;
+  limitaciones: string;
+  recomendacionCalorias?: number;
+  recomendacionProteinas?: number;
+  mantenimientoCalorias?: number;
+  nivelExigencia?: string;
 };
 
 export type Settings = {
   apiKey: string;
+  userName: string;
+  profileComplete: boolean;
+  age: number;
+  weight: number;
+  height: number;
+  gender: "female" | "male" | "other";
+  activity: "low" | "light" | "moderate" | "high" | "very-high";
+  goals: string[];
+  maintenanceCalories: number;
   metaCalorias: number;
   metaProteinas: number;
+  additionalDetails: string;
+  bodyAssessment?: BodyAssessment;
 };
 
 const MEALS_KEY = "fitjudge.meals";
@@ -19,9 +44,71 @@ const SETTINGS_KEY = "fitjudge.settings";
 
 export const defaultSettings: Settings = {
   apiKey: "",
+  userName: "",
+  profileComplete: false,
+  age: 30,
+  weight: 70,
+  height: 170,
+  gender: "other",
+  activity: "moderate",
+  goals: [],
+  maintenanceCalories: 2000,
   metaCalorias: 2000,
   metaProteinas: 150,
+  additionalDetails: "",
 };
+
+export const activityOptions = [
+  { value: "low", label: "Poco activa", description: "Trabajo sentado y poco ejercicio" },
+  { value: "light", label: "Algo activa", description: "Entrenamiento suave 1-3 días/semana" },
+  {
+    value: "moderate",
+    label: "Moderadamente activa",
+    description: "Entrenamiento 3-5 días/semana",
+  },
+  { value: "high", label: "Muy activa", description: "Entrenamiento intenso 6-7 días/semana" },
+  {
+    value: "very-high",
+    label: "Extremadamente activa",
+    description: "Trabajo físico y entrenamiento intenso",
+  },
+] as const;
+
+export const goalOptions = [
+  { value: "lose-fat", label: "Perder grasa" },
+  { value: "gain-muscle", label: "Ganar músculo" },
+  { value: "maintain", label: "Mantener mi peso" },
+  { value: "improve-performance", label: "Mejorar mi rendimiento" },
+] as const;
+
+export type ProfileInput = Pick<
+  Settings,
+  "userName" | "age" | "weight" | "height" | "gender" | "activity" | "goals" | "additionalDetails"
+>;
+
+export function calculateTargets(profile: ProfileInput) {
+  const base = profile.gender === "male" ? 5 : profile.gender === "female" ? -161 : -78;
+  const bmr = 10 * profile.weight + 6.25 * profile.height - 5 * profile.age + base;
+  const activityMultiplier = {
+    low: 1.2,
+    light: 1.375,
+    moderate: 1.55,
+    high: 1.725,
+    "very-high": 1.9,
+  }[profile.activity];
+  const maintenanceCalories = Math.round((bmr * activityMultiplier) / 50) * 50;
+  const calorieAdjustment = profile.goals.includes("lose-fat")
+    ? -400
+    : profile.goals.includes("gain-muscle")
+      ? 250
+      : 0;
+  const metaCalorias = Math.max(1200, maintenanceCalories + calorieAdjustment);
+  const metaProteinas = Math.round(
+    profile.weight * (profile.goals.includes("gain-muscle") ? 2 : 1.7),
+  );
+
+  return { maintenanceCalories, metaCalorias, metaProteinas };
+}
 
 export function loadSettings(): Settings {
   if (typeof window === "undefined") return defaultSettings;
@@ -56,6 +143,14 @@ export function fileToBase64(file: File): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+export function splitDataUrl(dataUrl: string | null) {
+  if (!dataUrl) return { imageBase64: "", mimeType: "image/jpeg" };
+  const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/s);
+  return match
+    ? { imageBase64: match[2], mimeType: match[1] }
+    : { imageBase64: dataUrl, mimeType: "image/jpeg" };
 }
 
 const SYSTEM_PROMPT = `Eres "El Entrenador Estricto", un entrenador personal exigente, ácido y divertido.

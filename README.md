@@ -22,3 +22,20 @@ cd <repository-name>
 npm i
 npm run dev
 ```
+
+## Supabase y análisis con IA
+
+La app usa Supabase Auth para crear cuentas e iniciar sesión. Las migraciones de tablas, políticas
+RLS, perfil corporal y Storage privado están en `supabase/migrations/`.
+
+Configura la clave de OpenAI como secreto de Supabase, nunca en Ajustes ni en el navegador:
+
+```sh
+npx supabase secrets set OPENAI_API_KEY=tu_clave_de_openai
+npx supabase functions deploy analizar-comida --no-verify-jwt
+```
+
+Después de aplicar la migración en el proyecto de Supabase, las comidas se guardan por usuario y
+por fecha. La pantalla calcula la evaluación diaria sobre las comidas registradas ese día. La foto
+corporal es opcional, se guarda en el bucket privado `body-progress` y el informe solo contiene
+observaciones visuales, no diagnósticos médicos.
